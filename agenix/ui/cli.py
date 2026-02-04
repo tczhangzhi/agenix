@@ -2,7 +2,7 @@
 
 import os
 import sys
-from typing import Optional
+from typing import Optional, Dict
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
@@ -17,7 +17,9 @@ from rich.table import Table
 from rich.text import Text
 
 from ..core.messages import (Event, ImageContent, MessageEndEvent,
-                             MessageStartEvent, MessageUpdateEvent, TextContent,
+                             MessageStartEvent, MessageUpdateEvent,
+                             ReasoningStartEvent, ReasoningUpdateEvent,
+                             ReasoningEndEvent, TextContent,
                              ToolExecutionEndEvent, ToolExecutionStartEvent,
                              ToolExecutionUpdateEvent, TurnEndEvent,
                              TurnStartEvent)
@@ -35,6 +37,7 @@ class CLIRenderer:
         self.message_buffer = []  # For buffering streaming content
         self.in_live_mode = False
         self.tool_output_lines = []  # Store tool output lines
+        self.current_reasoning = {}  # Track reasoning blocks
 
         # Initialize prompt session with better unicode support
         self.prompt_session = PromptSession(
@@ -48,27 +51,41 @@ class CLIRenderer:
         if isinstance(event, TurnStartEvent):
             pass  # Don't show separator
 
+        elif isinstance(event, ReasoningStartEvent):
+            # Don't show anything - will render inline with message
+            self.current_reasoning[event.reasoning_id] = ""
+
+        elif isinstance(event, ReasoningUpdateEvent):
+            if event.reasoning_id in self.current_reasoning:
+                self.current_reasoning[event.reasoning_id] += event.delta
+                # Stream reasoning in dim style
+                self.console.print(f"[dim]{event.delta}[/dim]", end="")
+
+        elif isinstance(event, ReasoningEndEvent):
+            # Add newline after reasoning, before text
+            if event.content:
+                self.console.print()  # Newline to separate from text
+            if event.reasoning_id in self.current_reasoning:
+                del self.current_reasoning[event.reasoning_id]
+
         elif isinstance(event, MessageStartEvent):
             self.current_message = ""
             self.message_buffer = []
+            # Print indicator for Assistant message (Claude Code style)
+            self.console.print()
+            self.console.print("⏺ ", end="")
 
         elif isinstance(event, MessageUpdateEvent):
-            # Accumulate message
+            # Accumulate message and stream output in real-time
             self.current_message += event.delta
             self.message_buffer.append(event.delta)
+            # Stream the delta immediately
+            self.console.print(event.delta, end="")
 
         elif isinstance(event, MessageEndEvent):
-            # Show assistant message in a box when complete
+            # End streaming with newline
             if self.current_message:
-                self.console.print()
-                self.console.print(Panel(
-                    self.current_message.strip(),
-                    border_style="green",
-                    box=box.ROUNDED,
-                    padding=(0, 1),
-                    title="[bold green]Assistant[/bold green]",
-                    title_align="left"
-                ))
+                self.console.print()  # Final newline
             self.current_message = ""
             self.message_buffer = []
 
@@ -76,6 +93,10 @@ class CLIRenderer:
             self.current_tool = event.tool_name
             self.current_tool_args = event.args if hasattr(event, 'args') else None
             self.tool_output_lines = []
+            # Display tool invocation in Claude Code style
+            self.console.print()
+            args_str = self._format_tool_args(event.tool_name, event.args)
+            self.console.print(f"⏺ [cyan]{event.tool_name}[/cyan]({args_str})")
 
         elif isinstance(event, ToolExecutionUpdateEvent):
             # Collect tool output
@@ -85,31 +106,25 @@ class CLIRenderer:
                 self.tool_output_lines.extend(lines)
 
         elif isinstance(event, ToolExecutionEndEvent):
-            # Show tool execution in a box
+            # Show tool result in Claude Code style
             if event.result:
-                # Handle both ToolResult objects and direct content
+                # Extract result text
                 content = event.result
-
-                # If event.result is a list (structured content with text/images)
                 if isinstance(content, list):
-                    # Mixed content (text + images)
                     result_parts = []
                     for item in content:
                         if isinstance(item, TextContent):
                             result_parts.append(item.text)
                         elif isinstance(item, ImageContent):
-                            # Show image placeholder
                             media_type = item.source.get('media_type', 'image')
                             result_parts.append(f"[Image: {media_type}]")
                         else:
-                            # Fallback: try to convert to string
                             if hasattr(item, 'text'):
                                 result_parts.append(item.text)
                             else:
                                 result_parts.append(str(item))
                     result_str = '\n'.join(result_parts)
                 elif isinstance(content, ToolResult):
-                    # ToolResult object - extract content
                     if isinstance(content.content, list):
                         result_parts = []
                         for item in content.content:
@@ -124,41 +139,8 @@ class CLIRenderer:
                 else:
                     result_str = str(content)
 
-                all_lines = result_str.split('\n')
-
-                # Get last 8 non-empty lines
-                display_lines = [line for line in all_lines if line.strip()][-8:]
-
-                if display_lines:
-                    output_text = '\n'.join(display_lines)
-
-                    # Build tool title with args
-                    tool_title = f"[cyan]{self.current_tool}[/cyan]"
-
-                    # Add key arg to title
-                    if self.current_tool_args:
-                        if 'file_path' in self.current_tool_args:
-                            tool_title += f" [dim]{self.current_tool_args['file_path']}[/dim]"
-                        elif 'pattern' in self.current_tool_args:
-                            tool_title += f" [dim]{self.current_tool_args['pattern']}[/dim]"
-                        elif 'command' in self.current_tool_args:
-                            cmd = self.current_tool_args['command']
-                            if len(cmd) > 40:
-                                cmd = cmd[:37] + "..."
-                            tool_title += f" [dim]{cmd}[/dim]"
-
-                    border_color = "red" if event.is_error else "magenta"
-                    title_text = f"[bold]Tool: {tool_title}[/bold]"
-
-                    self.console.print()
-                    self.console.print(Panel(
-                        output_text,
-                        border_style=border_color,
-                        box=box.ROUNDED,
-                        padding=(0, 1),
-                        title=title_text,
-                        title_align="left"
-                    ))
+                # Show result summary
+                self._render_tool_result(self.current_tool, self.current_tool_args, result_str, event.is_error)
 
             self.current_tool = None
             self.current_tool_args = None
@@ -215,6 +197,114 @@ class CLIRenderer:
             border_style="red",
             padding=(1, 2)
         ))
+
+    def _format_tool_args(self, tool_name: str, args: Optional[Dict]) -> str:
+        """Format tool arguments for display."""
+        if not args:
+            return ""
+
+        # Show key argument based on tool type
+        if 'file_path' in args:
+            return args['file_path']
+        elif 'pattern' in args:
+            return args['pattern']
+        elif 'command' in args:
+            cmd = args['command']
+            return cmd[:50] + "..." if len(cmd) > 50 else cmd
+        elif 'content' in args:
+            return "..."
+
+        # Fallback: show first key
+        if args:
+            key = list(args.keys())[0]
+            val = str(args[key])
+            return val[:50] + "..." if len(val) > 50 else val
+
+        return ""
+
+    def _render_tool_result(self, tool_name: str, args: Optional[Dict], result_text: str, is_error: bool):
+        """Render tool result in Claude Code style."""
+        # Result indicator
+        if is_error:
+            self.console.print("  [red]⎿  Error[/red]", end="")
+            self.console.print(f": {result_text[:100]}")
+            return
+
+        self.console.print("  [green]⎿[/green]  ", end="")
+
+        # Result summary based on tool type
+        if tool_name in ["Write", "write"] and args:
+            file_path = args.get('file_path', '')
+            content = args.get('content', '')
+            if content:
+                content_lines = content.split('\n')
+                # Filter out empty lines for count
+                non_empty = [l for l in content_lines if l.strip()]
+                num_lines = len(content_lines)
+                self.console.print(f"Wrote {num_lines} lines to {file_path}")
+
+                # Show first 5 lines with line numbers
+                for i, line in enumerate(content_lines[:5], 1):
+                    # Escape markup in the line content
+                    escaped_line = line.replace('[', '\\[').replace(']', '\\]')
+                    self.console.print(f"     {i:3} {escaped_line[:77]}")
+
+                # Show remaining count
+                if len(content_lines) > 5:
+                    remaining = len(content_lines) - 5
+                    self.console.print(f"     … +{remaining} lines")
+            else:
+                self.console.print(result_text)
+
+        elif tool_name in ["Edit", "edit"] and args:
+            file_path = args.get('file_path', '')
+            self.console.print(f"Edited {file_path}")
+
+        elif tool_name in ["Read", "read"] and not is_error:
+            lines = result_text.split('\n')
+            num_lines = len([l for l in lines if l.strip()])
+            file_path = args.get('file_path', '') if args else ''
+            self.console.print(f"Read {num_lines} lines from {file_path}")
+
+        elif tool_name in ["Bash", "bash"] and not is_error:
+            lines = result_text.split('\n')
+            # Show command result
+            if "Exit code:" in result_text or "Command:" in result_text:
+                # Parse bash tool output
+                self.console.print("Command completed")
+                # Show output lines (skip metadata)
+                output_started = False
+                shown_lines = 0
+                for line in lines:
+                    if "Stdout:" in line or "Stderr:" in line:
+                        output_started = True
+                        continue
+                    if output_started and line.strip() and shown_lines < 5:
+                        escaped_line = line.replace('[', '\\[').replace(']', '\\]')
+                        self.console.print(f"     {escaped_line[:77]}")
+                        shown_lines += 1
+            else:
+                # Generic output
+                self.console.print("Command completed")
+                for line in lines[:5]:
+                    if line.strip():
+                        escaped_line = line.replace('[', '\\[').replace(']', '\\]')
+                        self.console.print(f"     {escaped_line[:77]}")
+                if len(lines) > 5:
+                    self.console.print(f"     … +{len(lines)-5} lines")
+
+        else:
+            # Generic result display
+            lines = result_text.split('\n')
+            summary_line = lines[0][:80] if lines else ""
+            self.console.print(summary_line)
+            if len(lines) > 1:
+                for line in lines[1:4]:
+                    if line.strip():
+                        escaped_line = line.replace('[', '\\[').replace(']', '\\]')
+                        self.console.print(f"     {escaped_line[:77]}")
+                if len(lines) > 4:
+                    self.console.print(f"     … +{len(lines)-4} lines")
 
     def render_welcome(self, model: str = None, tools=None, skills=None) -> None:
         """Render welcome banner with ASCII art."""

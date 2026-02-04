@@ -13,10 +13,11 @@ from .messages import (AssistantMessage, ImageContent, Message, TextContent,
 @dataclass
 class StreamEvent:
     """LLM stream event."""
-    type: str
+    type: str  # "text_delta" | "tool_call" | "finish" | "reasoning_delta"
     delta: str = ""
     tool_call: Optional[ToolCall] = None
     finish_reason: Optional[str] = None  # "stop", "length", "tool_calls", "content_filter"
+    reasoning_block_id: Optional[str] = None  # For tracking reasoning blocks
 
 
 class LLMProvider(ABC):
@@ -395,6 +396,10 @@ class AnthropicProvider(LLMProvider):
                 "or pass api_key parameter."
             )
 
+        # Clean up base_url: Anthropic API doesn't use /v1 suffix
+        if self.base_url and self.base_url.endswith("/v1"):
+            self.base_url = self.base_url[:-3]  # Remove /v1
+
     async def stream(
         self,
         model: str,
@@ -430,24 +435,68 @@ class AnthropicProvider(LLMProvider):
         if tools:
             kwargs["tools"] = [self._convert_tool(t) for t in tools]
 
+        # Enable thinking for models that support it
+        if "think" in model.lower():
+            # Thinking requires:
+            # 1. budget_tokens >= 1024
+            # 2. max_tokens > budget_tokens
+            # Reserve at least 2048 tokens for output (1024 thinking + 1024 response)
+            if max_tokens >= 2048:
+                thinking_budget = min(10000, max_tokens - 1024)
+                if thinking_budget >= 1024:
+                    kwargs["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": thinking_budget
+                    }
+
         async with client.messages.stream(**kwargs) as stream:
             # Track tool calls being built
             tool_calls_map = {}
+            # Track reasoning blocks
+            reasoning_buffer = {}
 
             async for event in stream:
                 if event.type == "content_block_start":
-                    if hasattr(event.content_block, "type") and event.content_block.type == "tool_use":
-                        # Tool call started - initialize tracking
-                        tool_calls_map[event.index] = {
-                            "id": event.content_block.id,
-                            "name": event.content_block.name,
-                            "input": ""
-                        }
+                    if hasattr(event.content_block, "type"):
+                        if event.content_block.type == "tool_use":
+                            # Tool call started - initialize tracking
+                            tool_calls_map[event.index] = {
+                                "id": event.content_block.id,
+                                "name": event.content_block.name,
+                                "input": ""
+                            }
+                        elif event.content_block.type == "thinking":
+                            # Reasoning block started
+                            reasoning_buffer[event.index] = {
+                                "id": f"reasoning_{event.index}",
+                                "content": ""
+                            }
 
                 elif event.type == "content_block_delta":
                     if hasattr(event.delta, "text"):
-                        # Text content
-                        yield StreamEvent(type="text_delta", delta=event.delta.text)
+                        # Check if this is reasoning text
+                        if event.index in reasoning_buffer:
+                            # This is reasoning content
+                            delta_text = event.delta.text
+                            reasoning_buffer[event.index]["content"] += delta_text
+                            yield StreamEvent(
+                                type="reasoning_delta",
+                                delta=delta_text,
+                                reasoning_block_id=reasoning_buffer[event.index]["id"]
+                            )
+                        else:
+                            # Regular text content
+                            yield StreamEvent(type="text_delta", delta=event.delta.text)
+                    elif hasattr(event.delta, "thinking"):
+                        # ThinkingDelta - has .thinking instead of .text
+                        if event.index in reasoning_buffer:
+                            delta_text = event.delta.thinking
+                            reasoning_buffer[event.index]["content"] += delta_text
+                            yield StreamEvent(
+                                type="reasoning_delta",
+                                delta=delta_text,
+                                reasoning_block_id=reasoning_buffer[event.index]["id"]
+                            )
                     elif hasattr(event.delta, "partial_json"):
                         # Tool call input in progress
                         if event.index in tool_calls_map:
@@ -472,6 +521,9 @@ class AnthropicProvider(LLMProvider):
                                 arguments=arguments
                             )
                         )
+                    elif event.index in reasoning_buffer:
+                        # Reasoning block completed - just clean up, will be handled by agent
+                        pass
 
             # Get final message to extract stop_reason
             final_message = await stream.get_final_message()
@@ -523,6 +575,20 @@ class AnthropicProvider(LLMProvider):
         if tools:
             kwargs["tools"] = [self._convert_tool(t) for t in tools]
 
+        # Enable thinking for models that support it
+        if "think" in model.lower():
+            # Thinking requires:
+            # 1. budget_tokens >= 1024
+            # 2. max_tokens > budget_tokens
+            # Reserve at least 2048 tokens for output (1024 thinking + 1024 response)
+            if max_tokens >= 2048:
+                thinking_budget = min(10000, max_tokens - 1024)
+                if thinking_budget >= 1024:
+                    kwargs["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": thinking_budget
+                    }
+
         response = await client.messages.create(**kwargs)
 
         # Parse response
@@ -532,6 +598,13 @@ class AnthropicProvider(LLMProvider):
         for block in response.content:
             if block.type == "text":
                 content_parts.append(TextContent(text=block.text))
+            elif block.type == "thinking":
+                # Add thinking content as ReasoningContent
+                from .messages import ReasoningContent
+                content_parts.append(ReasoningContent(
+                    text=block.thinking,
+                    reasoning_id="thinking"
+                ))
             elif block.type == "tool_use":
                 tool_calls.append(ToolCall(
                     id=block.id,

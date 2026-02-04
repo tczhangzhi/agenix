@@ -24,6 +24,14 @@ class ImageContent:
 
 
 @dataclass
+class ReasoningContent:
+    """Reasoning content block."""
+    type: Literal["reasoning"] = "reasoning"
+    text: str = ""
+    reasoning_id: Optional[str] = None
+
+
+@dataclass
 class ToolCall:
     """Tool call from assistant."""
     id: str
@@ -54,7 +62,7 @@ class UserMessage:
 class AssistantMessage:
     """Assistant message with tool calls and metadata."""
     role: Literal["assistant"] = "assistant"
-    content: Union[str, List[Union[TextContent, ToolCall]]] = ""
+    content: Union[str, List[Union[TextContent, ReasoningContent, ToolCall]]] = ""
     tool_calls: List[ToolCall] = field(default_factory=list)
     model: str = ""
     usage: Optional[Usage] = None
@@ -163,6 +171,29 @@ class ToolExecutionStartEvent(AgentEvent):
 
 
 @dataclass
+class ReasoningStartEvent(AgentEvent):
+    """Reasoning started."""
+    type: Literal["reasoning_start"] = "reasoning_start"
+    reasoning_id: str = ""
+
+
+@dataclass
+class ReasoningUpdateEvent(AgentEvent):
+    """Reasoning content updated."""
+    type: Literal["reasoning_update"] = "reasoning_update"
+    reasoning_id: str = ""
+    delta: str = ""
+
+
+@dataclass
+class ReasoningEndEvent(AgentEvent):
+    """Reasoning ended."""
+    type: Literal["reasoning_end"] = "reasoning_end"
+    reasoning_id: str = ""
+    content: str = ""
+
+
+@dataclass
 class ToolExecutionUpdateEvent(AgentEvent):
     """Tool execution progress update."""
     type: Literal["tool_execution_update"] = "tool_execution_update"
@@ -190,6 +221,9 @@ Event = Union[
     MessageStartEvent,
     MessageUpdateEvent,
     MessageEndEvent,
+    ReasoningStartEvent,
+    ReasoningUpdateEvent,
+    ReasoningEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
     ToolExecutionEndEvent,

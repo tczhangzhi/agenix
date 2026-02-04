@@ -158,7 +158,7 @@ class SessionManager:
 
     def _content_to_dict(self, content: Any) -> Any:
         """Convert content to dictionary for serialization."""
-        from .messages import TextContent, ImageContent, ToolCall
+        from .messages import TextContent, ImageContent, ToolCall, ReasoningContent
 
         if isinstance(content, str):
             return content
@@ -175,6 +175,13 @@ class SessionManager:
                     result.append({
                         "type": "image",
                         "source": item.source
+                    })
+                elif isinstance(item, ReasoningContent):
+                    # Save reasoning content
+                    result.append({
+                        "type": "reasoning",
+                        "text": item.text,
+                        "reasoning_id": item.reasoning_id
                     })
                 elif isinstance(item, ToolCall):
                     result.append({
@@ -194,7 +201,7 @@ class SessionManager:
 
     def _content_from_dict(self, data: Any) -> Any:
         """Convert dictionary back to content objects."""
-        from .messages import TextContent, ImageContent, ToolCall
+        from .messages import TextContent, ImageContent, ToolCall, ReasoningContent
 
         if isinstance(data, str):
             return data
@@ -210,6 +217,11 @@ class SessionManager:
                     result.append(TextContent(text=item.get("text", "")))
                 elif item_type == "image":
                     result.append(ImageContent(source=item.get("source", {})))
+                elif item_type == "reasoning":
+                    result.append(ReasoningContent(
+                        text=item.get("text", ""),
+                        reasoning_id=item.get("reasoning_id")
+                    ))
                 elif item_type == "tool_call":
                     result.append(ToolCall(
                         id=item.get("id", ""),
@@ -256,8 +268,15 @@ class SessionManager:
             else:
                 content = []
                 for item in content_data:
-                    if item.get("type") == "text":
+                    item_type = item.get("type")
+                    if item_type == "text":
                         content.append(TextContent(text=item.get("text", "")))
+                    elif item_type == "reasoning":
+                        from .messages import ReasoningContent
+                        content.append(ReasoningContent(
+                            text=item.get("text", ""),
+                            reasoning_id=item.get("reasoning_id")
+                        ))
 
             return AssistantMessage(
                 content=content,

@@ -9,10 +9,21 @@ from ..tools.base import Tool
 from .llm import LLMProvider, StreamEvent
 from .messages import (AgentEndEvent, AgentStartEvent, AssistantMessage, Event,
                        Message, MessageEndEvent, MessageStartEvent,
-                       MessageUpdateEvent, TextContent, ToolCall,
+                       MessageUpdateEvent, ReasoningContent, ReasoningStartEvent,
+                       ReasoningUpdateEvent, ReasoningEndEvent, TextContent, ToolCall,
                        ToolExecutionEndEvent, ToolExecutionStartEvent,
                        ToolExecutionUpdateEvent, ToolResultMessage,
                        TurnEndEvent, TurnStartEvent, UserMessage)
+
+
+@dataclass
+class LoopState:
+    """Agent loop state tracking."""
+    turn: int = 0
+    total_tool_calls: int = 0
+    consecutive_errors: int = 0
+    last_action: str = ""  # "text" | "tool_call" | "error"
+    has_made_progress: bool = False  # Whether valid output was produced
 
 
 @dataclass
@@ -28,11 +39,23 @@ class AgentConfig:
 
     def __post_init__(self):
         """Create provider after initialization."""
-        # Auto-detect provider from base_url or use OpenAI-compatible by default
+        # Auto-detect provider from base_url or model name
         try:
-            from .llm import OpenAIProvider
-            self.provider = OpenAIProvider(
-                api_key=self.api_key, base_url=self.base_url)
+            # Check if using Anthropic (by base_url or model name)
+            is_anthropic = (
+                (self.base_url and "anthropic" in self.base_url.lower()) or
+                (self.base_url and "aihubmix.com" in self.base_url.lower() and "claude" in self.model.lower()) or
+                ("claude" in self.model.lower() and not self.base_url)
+            )
+
+            if is_anthropic:
+                from .llm import AnthropicProvider
+                self.provider = AnthropicProvider(
+                    api_key=self.api_key, base_url=self.base_url)
+            else:
+                from .llm import OpenAIProvider
+                self.provider = OpenAIProvider(
+                    api_key=self.api_key, base_url=self.base_url)
         except Exception as e:
             raise ValueError(f"Failed to initialize LLM provider: {e}")
 
@@ -60,6 +83,9 @@ class Agent:
 
         # Build tool lookup
         self.tool_map = {tool.name: tool for tool in self.tools}
+
+        # Loop state tracking
+        self.loop_state = LoopState()
 
     def subscribe(self, callback: Callable[[Event], None]) -> Callable[[], None]:
         """Subscribe to agent events.
@@ -103,7 +129,12 @@ class Agent:
         self._emit(event)
         yield event
 
+        # Reset loop state
+        self.loop_state = LoopState()
+
         for turn in range(self.config.max_turns):
+            self.loop_state.turn = turn
+
             # Emit turn start
             turn_event = TurnStartEvent()
             self._emit(turn_event)
@@ -122,10 +153,26 @@ class Agent:
             # Add to messages
             self.messages.append(assistant_message)
 
+            # Track progress - has text or reasoning content
+            if assistant_message.content:
+                if isinstance(assistant_message.content, str):
+                    if assistant_message.content.strip():
+                        self.loop_state.has_made_progress = True
+                        self.loop_state.last_action = "text"
+                elif isinstance(assistant_message.content, list):
+                    if any(isinstance(c, (TextContent, ReasoningContent)) and c.text.strip()
+                           for c in assistant_message.content):
+                        self.loop_state.has_made_progress = True
+                        self.loop_state.last_action = "text"
+
             # Execute tools if any
             tool_results = []
+            error_count = 0
             if assistant_message.tool_calls:
+                self.loop_state.last_action = "tool_call"
                 for tool_call in assistant_message.tool_calls[:self.config.max_tool_calls_per_turn]:
+                    self.loop_state.total_tool_calls += 1
+
                     # Validate tool call has proper arguments before execution
                     if not tool_call.arguments or not isinstance(tool_call.arguments, dict):
                         # Invalid tool call - create detailed error message
@@ -139,6 +186,7 @@ class Agent:
                         )
                         tool_results.append(error_msg)
                         self.messages.append(error_msg)
+                        error_count += 1
                         continue
 
                     # Execute valid tool call
@@ -163,26 +211,53 @@ class Agent:
                             tool_results.append(result_msg)
                             self.messages.append(result_msg)
 
+                            if tool_event.is_error:
+                                error_count += 1
+
+                # Update consecutive error count
+                if error_count == len(tool_results) and error_count > 0:
+                    # All tools failed
+                    self.loop_state.consecutive_errors += 1
+                    self.loop_state.last_action = "error"
+                else:
+                    # At least one tool succeeded
+                    self.loop_state.consecutive_errors = 0
+                    self.loop_state.has_made_progress = True
+
             # Emit turn end
             turn_end = TurnEndEvent(
                 message=assistant_message, tool_results=tool_results)
             self._emit(turn_end)
             yield turn_end
 
-            # Check if we should continue
-            # Continue if: (1) there are tool calls, OR (2) output was truncated (length)
-            should_continue = (
-                bool(assistant_message.tool_calls) or
-                assistant_message.stop_reason == "length"
-            )
-
-            if not should_continue:
+            # Enhanced loop continuation logic
+            if not self._should_continue_loop(assistant_message):
                 break
 
         # Emit agent end
         end_event = AgentEndEvent(messages=self.messages)
         self._emit(end_event)
         yield end_event
+
+    def _should_continue_loop(self, message: AssistantMessage) -> bool:
+        """Enhanced loop continuation logic with state tracking."""
+        # Stop if too many consecutive errors
+        if self.loop_state.consecutive_errors >= 3:
+            return False
+
+        # Continue if there are tool calls to execute
+        if message.tool_calls:
+            return True
+
+        # Continue if output was truncated
+        if message.stop_reason == "length":
+            return True
+
+        # Stop if we've made progress (text/reasoning output) and no tool calls
+        if self.loop_state.has_made_progress and not message.tool_calls:
+            return False
+
+        return False
 
     async def _stream_llm_response(self) -> AsyncIterator[Event]:
         """Stream LLM response."""
@@ -201,6 +276,7 @@ class Agent:
             # Collect streaming content
             text_parts = []
             tool_calls_list = []
+            reasoning_parts = {}  # Track reasoning blocks by ID
             finish_reason = None  # Capture actual finish reason from LLM
 
             # Stream from LLM
@@ -224,6 +300,26 @@ class Agent:
                     self._emit(update_event)
                     yield update_event
 
+                elif event.type == "reasoning_delta":
+                    # Handle reasoning content
+                    reasoning_id = event.reasoning_block_id or "default"
+
+                    if reasoning_id not in reasoning_parts:
+                        # First chunk of this reasoning block
+                        reasoning_parts[reasoning_id] = ""
+                        reasoning_start = ReasoningStartEvent(reasoning_id=reasoning_id)
+                        self._emit(reasoning_start)
+                        yield reasoning_start
+
+                    # Accumulate reasoning content
+                    reasoning_parts[reasoning_id] += event.delta
+                    reasoning_update = ReasoningUpdateEvent(
+                        reasoning_id=reasoning_id,
+                        delta=event.delta
+                    )
+                    self._emit(reasoning_update)
+                    yield reasoning_update
+
                 elif event.type == "tool_call" and event.tool_call:
                     # Complete tool call received
                     tool_calls_list.append(event.tool_call)
@@ -232,9 +328,24 @@ class Agent:
                     # Capture finish reason from LLM
                     finish_reason = event.finish_reason
 
+            # Emit reasoning end events and add to message content
+            for reasoning_id, content in reasoning_parts.items():
+                reasoning_end = ReasoningEndEvent(reasoning_id=reasoning_id, content=content)
+                self._emit(reasoning_end)
+                yield reasoning_end
+
             # Finalize message
+            content_list = []
+
+            # Add reasoning content first
+            for reasoning_id, content in reasoning_parts.items():
+                content_list.append(ReasoningContent(text=content, reasoning_id=reasoning_id))
+
+            # Add text content
             if text_parts:
-                message.content = [TextContent(text="".join(text_parts))]
+                content_list.append(TextContent(text="".join(text_parts)))
+
+            message.content = content_list if content_list else []
             message.tool_calls = tool_calls_list
 
             # Note: We don't fetch usage info to avoid extra API call and delay
