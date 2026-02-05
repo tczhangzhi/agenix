@@ -30,6 +30,9 @@ class Settings:
     max_tokens: int = 16384
     temperature: float = 0.7
 
+    # Context compaction
+    auto_compact: bool = True  # Automatically compact context when overflow detected
+
     # Working directory
     working_dir: str = "."
 
@@ -108,6 +111,8 @@ class Settings:
             self.max_tokens = int(os.getenv("AGENIX_MAX_TOKENS"))
         if os.getenv("AGENIX_TEMPERATURE"):
             self.temperature = float(os.getenv("AGENIX_TEMPERATURE"))
+        if os.getenv("AGENIX_AUTO_COMPACT"):
+            self.auto_compact = os.getenv("AGENIX_AUTO_COMPACT").lower() in ("true", "1", "yes")
 
     def _load_from_file(self, file_path: Path):
         """Load settings from a JSON file."""
@@ -138,6 +143,8 @@ class Settings:
             self.max_tokens = int(data["max_tokens"])
         if "temperature" in data:
             self.temperature = float(data["temperature"])
+        if "auto_compact" in data:
+            self.auto_compact = bool(data["auto_compact"])
         if "working_dir" in data and data["working_dir"]:
             self.working_dir = data["working_dir"]
         if "system_prompt" in data and data["system_prompt"]:
@@ -150,7 +157,7 @@ class Settings:
         # Store any extra settings
         known_keys = {
             "model", "api_key", "base_url", "reasoning_effort",
-            "max_turns", "max_tokens", "temperature",
+            "max_turns", "max_tokens", "temperature", "auto_compact",
             "working_dir", "system_prompt", "session", "oauth_tokens_file"
         }
         for key, value in data.items():
@@ -174,6 +181,7 @@ class Settings:
             "max_turns": self.max_turns,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
+            "auto_compact": self.auto_compact,
             "working_dir": self.working_dir,
             "system_prompt": self.system_prompt,
             "session": self.session,
@@ -199,6 +207,7 @@ class Settings:
             "max_turns": self.max_turns,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
+            "auto_compact": self.auto_compact,
             "working_dir": self.working_dir,
             "system_prompt": self.system_prompt,
             "session": self.session,

@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from ..core.messages import ImageContent, TextContent
+from ...core.messages import ImageContent, TextContent
 
 
 @dataclass

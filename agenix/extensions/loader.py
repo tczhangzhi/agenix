@@ -169,19 +169,83 @@ async def load_extension(file_path: str) -> Optional[LoadedExtension]:
     return extension
 
 
+async def load_builtin_extension(module_path: str) -> Optional[LoadedExtension]:
+    """Load a built-in extension from a module path.
+
+    Args:
+        module_path: Python module path (e.g., 'agenix.extensions.builtin.cli_channel')
+
+    Returns:
+        LoadedExtension instance, or None if loading failed.
+    """
+    try:
+        # Import the module
+        import importlib
+        module = importlib.import_module(module_path)
+
+        # Get extension name from module path
+        extension_name = module_path.split('.')[-1]
+
+        # Create extension object
+        extension = LoadedExtension(
+            path=f"<builtin:{module_path}>",
+            name=extension_name,
+            tools={},
+            commands={},
+            handlers={}
+        )
+
+        # Look for setup() function
+        if not hasattr(module, 'setup'):
+            print(f"Warning: Built-in extension {module_path} does not export a setup() function")
+            return None
+
+        setup_fn = getattr(module, 'setup')
+        if not callable(setup_fn):
+            print(f"Warning: Built-in extension {module_path} setup is not callable")
+            return None
+
+        # Call setup with our API
+        api = ExtensionLoaderAPI(extension)
+        try:
+            import asyncio
+            import inspect
+            if inspect.iscoroutinefunction(setup_fn):
+                await setup_fn(api)
+            else:
+                setup_fn(api)
+        except Exception as e:
+            print(f"Error calling setup() in built-in extension {module_path}: {e}")
+            traceback.print_exc()
+            return None
+
+        return extension
+
+    except ImportError as e:
+        print(f"Error importing built-in extension {module_path}: {e}")
+        return None
+    except Exception as e:
+        print(f"Error loading built-in extension {module_path}: {e}")
+        traceback.print_exc()
+        return None
+
+
 async def discover_and_load_extensions(
     cwd: str,
-    agenix_dir: Optional[str] = None
+    agenix_dir: Optional[str] = None,
+    builtin_extensions: Optional[List[str]] = None
 ) -> List[LoadedExtension]:
     """Discover and load extensions from standard locations.
 
     Loads from (in order):
-    1. Global: ~/.agenix/extensions/
-    2. Project: .agenix/extensions/
+    1. Built-in: agenix.extensions.builtin.*
+    2. Global: ~/.agenix/extensions/
+    3. Project: .agenix/extensions/
 
     Args:
         cwd: Current working directory (for project-local extensions)
         agenix_dir: Global agenix directory (default: ~/.agenix)
+        builtin_extensions: List of built-in extension module paths to load
 
     Returns:
         List of successfully loaded extensions.
@@ -189,17 +253,26 @@ async def discover_and_load_extensions(
     if agenix_dir is None:
         agenix_dir = os.path.expanduser("~/.agenix")
 
+    extensions: List[LoadedExtension] = []
+
+    # 1. Load built-in extensions
+    if builtin_extensions:
+        for module_path in builtin_extensions:
+            ext = await load_builtin_extension(module_path)
+            if ext:
+                extensions.append(ext)
+
     all_paths: List[str] = []
     seen = set()
 
-    # 1. Global extensions: ~/.agenix/extensions/
+    # 2. Global extensions: ~/.agenix/extensions/
     global_ext_dir = os.path.join(agenix_dir, "extensions")
     for path in discover_extensions(global_ext_dir):
         if path not in seen:
             seen.add(path)
             all_paths.append(path)
 
-    # 2. Project-local extensions: .agenix/extensions/
+    # 3. Project-local extensions: .agenix/extensions/
     local_ext_dir = os.path.join(cwd, ".agenix", "extensions")
     for path in discover_extensions(local_ext_dir):
         if path not in seen:
@@ -207,7 +280,6 @@ async def discover_and_load_extensions(
             all_paths.append(path)
 
     # Load all discovered extensions
-    extensions: List[LoadedExtension] = []
     for path in all_paths:
         extension = await load_extension(path)
         if extension:

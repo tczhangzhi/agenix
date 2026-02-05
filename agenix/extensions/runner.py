@@ -32,11 +32,17 @@ class ExtensionRunner:
             commands.update(ext.commands)
         return commands
 
-    async def emit(self, event: Event) -> None:
+    async def emit(self, event: Event) -> Event:
         """Emit an event to all registered handlers.
 
         Args:
             event: The event to emit.
+
+        Returns:
+            The potentially modified event.
+            Extensions can:
+            - Set event.cancelled = True to cancel operation
+            - Modify event data (e.g., event.messages, event.custom_instructions)
         """
         event_type = event.type
 
@@ -46,10 +52,20 @@ class ExtensionRunner:
             for handler in handlers:
                 try:
                     await handler(event, self.context)
+
+                    # Check if cancelled
+                    if hasattr(event, 'cancelled') and event.cancelled:
+                        break
                 except Exception as e:
                     print(
                         f"Error in extension {ext.name} handling {event_type}: {e}")
                     traceback.print_exc()
+
+            # Stop if cancelled
+            if hasattr(event, 'cancelled') and event.cancelled:
+                break
+
+        return event
 
     async def execute_command(self, command_name: str, args: str) -> bool:
         """Execute a registered extension command.
@@ -88,3 +104,14 @@ class ExtensionRunner:
     def get_extension_names(self) -> List[str]:
         """Get list of loaded extension names."""
         return [ext.name for ext in self.extensions]
+
+    async def emit_tool_call(self, tool_name: str, args: dict) -> bool:
+        """Emit tool_call event.
+
+        Returns:
+            True if allowed, False if blocked by an extension.
+        """
+        from .types import ToolCallEvent
+        event = ToolCallEvent(tool_name=tool_name, args=args)
+        await self.emit(event)
+        return not (hasattr(event, 'cancelled') and event.cancelled)

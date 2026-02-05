@@ -14,7 +14,7 @@ from typing import (TYPE_CHECKING, Any, Awaitable, Callable, Dict, List,
 
 if TYPE_CHECKING:
     from ..core.agent import Agent
-    from ..tools.base import Tool
+    from ..tools.builtin.base import Tool
 
 
 # ============================================================================
@@ -26,8 +26,10 @@ class EventType(str, Enum):
     # Session events
     SESSION_START = "session_start"
     SESSION_END = "session_end"
+    SESSION_SHUTDOWN = "session_shutdown"
 
     # Agent events
+    BEFORE_AGENT_START = "before_agent_start"
     AGENT_START = "agent_start"
     AGENT_END = "agent_end"
     TURN_START = "turn_start"
@@ -37,8 +39,23 @@ class EventType(str, Enum):
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
 
+    # Context modification
+    CONTEXT = "context"
+
+    # Compaction events
+    BEFORE_COMPACT = "before_compact"
+    COMPACT = "compact"
+
     # Input event
     USER_INPUT = "user_input"
+
+    # Message streaming events
+    MESSAGE_START = "message_start"
+    MESSAGE_UPDATE = "message_update"
+    MESSAGE_END = "message_end"
+
+    # Model selection
+    MODEL_SELECT = "model_select"
 
 
 @dataclass
@@ -46,6 +63,16 @@ class Event:
     """Base event class."""
     type: EventType
     data: Dict[str, Any]
+
+
+@dataclass
+class CancellableEvent(Event):
+    """Base for events that can be cancelled."""
+    cancelled: bool = False
+
+    def cancel(self):
+        """Cancel this operation."""
+        self.cancelled = True
 
 
 @dataclass
@@ -65,15 +92,40 @@ class SessionEndEvent(Event):
 
 
 @dataclass
-class AgentStartEvent(Event):
-    """Fired when agent loop starts."""
+class SessionShutdownEvent(Event):
+    """Fired when session shuts down (final cleanup)."""
+
+    def __init__(self):
+        super().__init__(EventType.SESSION_SHUTDOWN, {})
+
+
+@dataclass
+class BeforeAgentStartEvent(CancellableEvent):
+    """Fired before agent loop starts (can inject messages)."""
 
     def __init__(self, prompt: str):
-        super().__init__(EventType.AGENT_START, {"prompt": prompt})
+        super().__init__(EventType.BEFORE_AGENT_START, {"prompt": prompt})
+        self.messages_to_inject = []
 
     @property
     def prompt(self) -> str:
         return self.data["prompt"]
+
+
+@dataclass
+class SessionEndEvent(Event):
+    """Fired when session ends."""
+
+    def __init__(self):
+        super().__init__(EventType.SESSION_END, {})
+
+
+@dataclass
+class AgentStartEvent(Event):
+    """Fired when agent loop starts."""
+
+    def __init__(self):
+        super().__init__(EventType.AGENT_START, {})
 
 
 @dataclass
@@ -120,8 +172,8 @@ class TurnEndEvent(Event):
 
 
 @dataclass
-class ToolCallEvent(Event):
-    """Fired before a tool executes."""
+class ToolCallEvent(CancellableEvent):
+    """Fired before a tool executes (can be cancelled)."""
 
     def __init__(self, tool_name: str, args: Dict[str, Any]):
         super().__init__(EventType.TOOL_CALL, {
@@ -172,6 +224,37 @@ class UserInputEvent(Event):
     @property
     def text(self) -> str:
         return self.data["text"]
+
+
+@dataclass
+class ContextEvent(Event):
+    """Fired before LLM call (extensions can modify messages)."""
+
+    def __init__(self, messages: List[Any]):
+        super().__init__(EventType.CONTEXT, {})
+        self.messages = messages  # Mutable - extensions can modify
+
+
+@dataclass
+class BeforeCompactEvent(CancellableEvent):
+    """Fired before compaction (extensions can cancel or customize)."""
+
+    def __init__(self, messages: List[Any]):
+        super().__init__(EventType.BEFORE_COMPACT, {})
+        self.messages = messages
+        self.custom_instructions: Optional[str] = None
+
+
+@dataclass
+class CompactEvent(Event):
+    """Fired after compaction completes."""
+
+    def __init__(self, summary: str):
+        super().__init__(EventType.COMPACT, {"summary": summary})
+
+    @property
+    def summary(self) -> str:
+        return self.data["summary"]
 
 
 # ============================================================================

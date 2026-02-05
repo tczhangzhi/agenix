@@ -23,7 +23,7 @@ from ..core.messages import (Event, ImageContent, MessageEndEvent,
                              ToolExecutionEndEvent, ToolExecutionStartEvent,
                              ToolExecutionUpdateEvent, TurnEndEvent,
                              TurnStartEvent)
-from ..tools.base import ToolResult
+from ..tools.builtin.base import ToolResult
 
 
 class CLIRenderer:
@@ -428,11 +428,69 @@ class CLIRenderer:
 class CLI:
     """Main CLI interface."""
 
-    def __init__(self, renderer: Optional[CLIRenderer] = None):
+    def __init__(self, renderer: Optional[CLIRenderer] = None, session_id: Optional[str] = None):
         self.renderer = renderer or CLIRenderer()
         self.tools = None  # Store tools for /help command
         self.model = None  # Store model name
         self.skills = None  # Store skills list
+        self.session_id = session_id  # Current session ID
+
+    async def run_interactive_async(
+        self,
+        agent,
+        cron_service=None,
+        tools=None,
+        model=None,
+        skills=None,
+        show_welcome=True
+    ) -> None:
+        """Run interactive chat loop in async mode with background services.
+
+        This is the async version that allows cron and other services to run concurrently.
+        """
+        import asyncio
+        import concurrent.futures
+
+        self.tools = tools
+        self.model = model
+        self.skills = skills
+
+        # Show welcome if requested
+        if show_welcome:
+            self.renderer.render_welcome(model=model, tools=tools, skills=skills)
+
+        # Create executor for blocking input
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        def get_input():
+            """Blocking input in thread."""
+            return self.renderer.prompt()
+
+        while True:
+            try:
+                # Get user input asynchronously
+                loop = asyncio.get_event_loop()
+                user_input = await loop.run_in_executor(executor, get_input)
+
+                if not user_input.strip():
+                    continue
+
+                # Handle commands
+                if user_input.startswith("/"):
+                    if not self.handle_command(user_input, agent):
+                        break
+                    continue
+
+                # Process message
+                await self.process_message(agent, user_input)
+
+            except KeyboardInterrupt:
+                self.renderer.render_message("system", "\nUse /quit to exit")
+                continue
+            except Exception as e:
+                self.renderer.render_error(str(e))
+
+        executor.shutdown(wait=False)
 
     def run_interactive(self, agent, tools=None, model=None, skills=None, show_welcome=True) -> None:
         """Run interactive chat loop."""
@@ -497,7 +555,12 @@ class CLI:
         args = parts[1] if len(parts) > 1 else ""
 
         if cmd in ["/quit", "/exit"]:
-            self.renderer.render_message("system", "Goodbye!")
+            # Show resume hint if we have a session ID
+            if self.session_id:
+                self.renderer.console.print()
+                self.renderer.console.print("[dim]Resume this session with:[/dim]")
+                self.renderer.console.print(f"[cyan]agenix --session {self.session_id}[/cyan]")
+                self.renderer.console.print()
             return False
 
         elif cmd == "/help":

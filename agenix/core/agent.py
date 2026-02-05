@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
-from ..tools.base import Tool
+from ..tools.builtin.base import Tool
 from .llm import LLMProvider, StreamEvent
 from .messages import (AgentEndEvent, AgentStartEvent, AssistantMessage, Event,
                        Message, MessageEndEvent, MessageStartEvent,
@@ -38,6 +38,7 @@ class AgentConfig:
     max_tokens: int = 16384  # Maximum tokens for LLM output (default: 16384 for modern models)
     provider: Optional[LLMProvider] = None  # Optional provider instance
     reasoning_effort: Optional[str] = None  # Reasoning effort for thinking models
+    auto_compact: bool = True  # Automatically compact context when overflow detected
 
     def __post_init__(self):
         """Create provider after initialization if not provided."""
@@ -109,6 +110,9 @@ class Agent:
         Yields:
             Agent events
         """
+        # Check for context overflow and compact if needed
+        await self._check_and_compact()
+
         # Add user message
         msg = UserMessage(content=user_message)
         self.messages.append(msg)
@@ -190,7 +194,7 @@ class Agent:
                         if isinstance(tool_event, ToolExecutionEndEvent):
                             # Create tool result message
                             # Preserve structured content from ToolResult
-                            from ..tools.base import ToolResult
+                            from ..tools.builtin.base import ToolResult
 
                             result_content = tool_event.result
                             if isinstance(result_content, ToolResult):
@@ -448,3 +452,85 @@ class Agent:
     def clear_messages(self) -> None:
         """Clear conversation history."""
         self.messages.clear()
+
+    async def cleanup(self) -> None:
+        """Cleanup agent resources.
+
+        Emits SESSION_SHUTDOWN event for extensions to perform cleanup.
+        """
+        try:
+            from ..extensions.types import SessionShutdownEvent
+            self._emit(SessionShutdownEvent())
+        except ImportError:
+            pass
+
+    async def _check_and_compact(self) -> None:
+        """Check for context overflow and compact if needed.
+
+        Philosophy: Trust the model. Only intervene when truly necessary.
+        When overflow happens, let the LLM summarize - it knows what's important.
+
+        Emits BEFORE_COMPACT and COMPACT events for extension hooks.
+        """
+        import logging
+        from .compaction import is_overflow, create_summary, compact_messages
+
+        logger = logging.getLogger(__name__)
+
+        if not self.config.auto_compact:
+            return
+
+        # Check if we truly need to compact
+        if not is_overflow(self.messages, self.config.model, self.config.auto_compact):
+            return
+
+        # Overflow detected - emit BEFORE_COMPACT event
+        # Extensions can cancel or provide custom instructions
+        try:
+            from ..extensions.types import BeforeCompactEvent, CompactEvent
+            event = BeforeCompactEvent(messages=self.messages.copy())
+            self._emit(event)
+
+            # Check if cancelled by extension
+            if event.cancelled:
+                logger.info("Compaction cancelled by extension")
+                return
+
+            # Use custom instructions if provided by extension
+            instructions = event.custom_instructions or None
+
+        except ImportError:
+            # Extensions not available, proceed normally
+            instructions = None
+
+        # Let the model decide what's important
+        logger.info("Context overflow detected, creating summary")
+
+        try:
+            # Let the model decide what's important
+            summary = await create_summary(
+                self.messages,
+                self.config.provider,
+                self.config.model,
+                self.config.system_prompt or "",
+                custom_instructions=instructions
+            )
+
+            if summary:
+                # Compact messages with LLM-generated summary
+                compacted = compact_messages(self.messages, summary)
+                self.messages = compacted
+                logger.info("Context compaction complete")
+
+                # Emit COMPACT event
+                try:
+                    from ..extensions.types import CompactEvent
+                    self._emit(CompactEvent(summary=summary))
+                except ImportError:
+                    pass
+            else:
+                logger.warning("Failed to create summary, skipping compaction")
+
+        except Exception as e:
+            logger.error(f"Error during compaction: {e}")
+            # Don't fail the request, just log the error

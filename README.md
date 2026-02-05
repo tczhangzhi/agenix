@@ -1,6 +1,6 @@
 # Agenix
 
-A lightweight AI coding agent powered by LLMs.
+A lightweight AI coding agent powered by LLMs with memory, scheduling, autonomous operation, and multi-channel support.
 
 ## Key Features
 
@@ -9,6 +9,12 @@ A lightweight AI coding agent powered by LLMs.
 3. **Simple Tools Without MCP** - Four core tools (Read, Write, Edit, Bash) + Grep, no MCP dependencies
 4. **Progressive Disclosure Skills** - Skills loaded on-demand to keep context minimal until needed
 5. **Extension System** - Hot-reloadable extensions for custom tools, commands, and event handlers
+6. **Memory System** - Persistent daily notes and long-term memory storage
+7. **Cron Scheduling** - Schedule tasks to run at specific times or intervals
+8. **Heartbeat Service** - Periodic agent wake-up to check for autonomous tasks
+9. **Context Compaction** - Automatic conversation summarization to handle long contexts
+10. **Multi-Channel Support** - Run on TUI, Telegram, WhatsApp, and more simultaneously
+11. **Event-Driven Architecture** - Message bus for decoupled service communication
 
 ## Installation
 
@@ -178,6 +184,81 @@ Built-in skills:
 - `browser-use` - Web automation
 - `find-skills` - Skill discovery
 - `skill-creator` - Skill creation guide
+
+## Multi-Channel Support
+
+Agenix supports multiple communication platforms through a unified channel architecture:
+
+### Supported Channels
+- **TUI (Terminal)** - Interactive command-line interface (built-in)
+- **Telegram** - Telegram Bot API integration (requires `python-telegram-bot`)
+- **WhatsApp** - WhatsApp Web via Node.js bridge (requires `websockets` + bridge server)
+
+### Architecture
+All channels share the same agent through an event-driven message bus:
+
+```
+User Input (TUI/Telegram/WhatsApp)
+    ↓
+Channel publishes AgentMessageEvent → Bus → Agent processes
+    ↓
+Agent publishes AgentResponseEvent → Bus → Channel sends response
+```
+
+### Quick Example
+```python
+from agenix import MessageBus, ChannelManager, TUIChannel, TUIConfig
+
+bus = MessageBus()
+await bus.start()
+
+manager = ChannelManager(bus=bus)
+manager.register(TUIChannel(TUIConfig(), bus=bus))
+# Add more channels: Telegram, WhatsApp, etc.
+
+await manager.start_all()
+```
+
+See [docs/CHANNELS.md](docs/CHANNELS.md) for detailed setup and usage.
+
+## Memory, Cron, and Heartbeat
+
+Agenix includes three powerful features for autonomous agent operation:
+
+### Memory System
+- **Daily Notes**: Automatic date-based notes in `memory/YYYY-MM-DD.md`
+- **Long-term Memory**: Persistent knowledge in `MEMORY.md`
+- **Agent Tools**: `MemoryRead` and `MemoryWrite` tools for agent access
+
+### Cron Scheduling
+- **Multiple Schedule Types**: One-time (`at`), repeating (`every`), or cron expressions
+- **Agent Tools**: `CronList`, `CronAdd`, `CronRemove` for agent management
+- **Persistent Storage**: Jobs saved and restored across sessions
+
+### Heartbeat Service
+- **Periodic Wake-up**: Agent checks `HEARTBEAT.md` for tasks at configurable intervals
+- **Smart Skipping**: Only runs when there's actionable content
+- **Autonomous Operation**: Agent can self-manage recurring tasks
+
+See [docs/MEMORY_CRON_HEARTBEAT.md](docs/MEMORY_CRON_HEARTBEAT.md) for detailed documentation and examples.
+
+## Context Compaction
+
+Agenix automatically manages conversation context to prevent overflow when history becomes too long:
+
+- **Automatic Detection**: Monitors token usage against model limits
+- **Smart Pruning**: Removes old tool outputs while keeping recent context
+- **Intelligent Summarization**: Creates summaries of long conversations
+- **Configurable**: Control auto-compaction via settings
+
+```json
+{
+  "auto_compact": true,   // Enable automatic compaction (default: true)
+  "enable_prune": true    // Enable pruning of old tool results (default: true)
+}
+```
+
+See [docs/COMPACTION.md](docs/COMPACTION.md) for detailed documentation.
 
 
 ## Documentation

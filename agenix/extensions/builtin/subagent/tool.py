@@ -8,7 +8,7 @@ import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, List
 
-from .base import Tool, ToolResult
+from ....tools.builtin.base import Tool, ToolResult
 
 
 class TaskTool(Tool):

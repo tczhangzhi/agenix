@@ -11,19 +11,19 @@ class TestCLIBasics:
 
     def test_import_cli_module(self):
         """Test that CLI module can be imported."""
-        from agenix.ui import cli
+        from agenix.channel import tui
 
-        assert cli is not None
+        assert tui is not None
 
     def test_cli_has_required_functions(self):
         """Test that CLI module has required functions."""
-        from agenix.ui.cli import CLIRenderer
+        from agenix.channel.tui import CLIRenderer
 
         assert CLIRenderer is not None
 
     def test_create_cli_renderer(self):
         """Test creating CLI renderer."""
-        from agenix.ui.cli import CLIRenderer
+        from agenix.channel.tui import CLIRenderer
 
         renderer = CLIRenderer()
 

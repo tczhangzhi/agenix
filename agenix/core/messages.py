@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
 
 if TYPE_CHECKING:
-    from ..tools.base import ToolResult
+    from ..tools.builtin.base import ToolResult
 
 
 @dataclass

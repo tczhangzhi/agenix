@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from ..core.messages import ImageContent, TextContent
+from ...core.messages import ImageContent, TextContent
 from .base import Tool, ToolResult
 
 

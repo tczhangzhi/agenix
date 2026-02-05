@@ -18,7 +18,8 @@ from .tools.write import WriteTool
 from .tools.glob import GlobTool
 from .tools.skill import SkillTool
 from .tools.task import TaskTool
-from .ui.cli import CLI, CLIRenderer
+from .channel.tui import CLI, CLIRenderer
+from .extensions import discover_and_load_extensions, ExtensionRunner, ExtensionContext
 
 
 def parse_args():
@@ -144,6 +145,11 @@ def get_default_system_prompt(tools: list) -> str:
         "glob": "Find files matching glob patterns",
         "skill": "Load specialized instructions from SKILL.md files",
         "task": "Delegate tasks to specialized subagents",
+        "MemoryRead": "Read from memory store (daily notes or long-term memory)",
+        "MemoryWrite": "Write to memory store (daily notes or long-term memory)",
+        "CronList": "List scheduled cron jobs",
+        "CronAdd": "Add a new scheduled cron job",
+        "CronRemove": "Remove a scheduled cron job",
     }
 
     # Build tools list
@@ -245,10 +251,15 @@ def main():
     # Check if we have a direct message (non-interactive)
     is_interactive = not args.message
 
-    # Initialize CLI renderer for interactive mode
+    # Initialize CLI renderer for interactive mode (will set session_id later)
     cli = CLI() if is_interactive else None
 
-    # Setup tools early so we can show them in banner
+    # Setup workspace
+    workspace = Path(working_dir) / ".agenix"
+    workspace.mkdir(exist_ok=True)
+
+    # Setup core tools (read, write, edit, bash, grep, glob, skill)
+    # Extension tools (memory, cron) will be added by extensions
     tools = [
         ReadTool(working_dir=working_dir),
         WriteTool(working_dir=working_dir),
@@ -304,6 +315,7 @@ def main():
             max_turns=settings.max_turns,
             max_tokens=settings.max_tokens,
             reasoning_effort=settings.reasoning_effort,
+            auto_compact=settings.auto_compact,
         )
         agent = Agent(config=config, tools=tools)
 
@@ -342,6 +354,10 @@ def main():
     # Subscribe to agent events for session persistence
     current_session_id = settings.session or session_manager.create_session()
 
+    # Pass session ID to CLI for resume hint
+    if cli:
+        cli.session_id = current_session_id
+
     def on_message_end(event):
         """Save messages to session."""
         from agenix.core.messages import MessageEndEvent
@@ -362,8 +378,85 @@ def main():
 
     # Run CLI
     if is_interactive:
-        # Interactive mode (banner already shown)
-        cli.run_interactive(agent, tools=tools, model=settings.model, skills=skills, show_welcome=False)
+        # Run async main loop
+        async def run_async():
+            """Run interactive CLI with background services."""
+            try:
+                # Load extensions (built-in + user)
+                extensions = await discover_and_load_extensions(
+                    cwd=working_dir,
+                    builtin_extensions=[
+                        'agenix.extensions.builtin.memory',
+                        'agenix.extensions.builtin.cron',
+                        'agenix.extensions.builtin.heartbeat',
+                    ]
+                )
+
+                # Create extension context
+                ctx = ExtensionContext(agent=agent, cwd=working_dir, tools=agent.tools)
+                runner = ExtensionRunner(extensions=extensions, context=ctx)
+
+                # Add extension tools to agent
+                from .tools.builtin.base import Tool
+                from .extensions.types import ToolDefinition
+
+                for tool_name, tool_def in runner.get_tools().items():
+                    # Wrap extension ToolDefinition as agent Tool
+                    class ExtensionTool(Tool):
+                        def __init__(self, definition: ToolDefinition):
+                            self.definition = definition
+
+                        @property
+                        def name(self) -> str:
+                            return self.definition.name
+
+                        @property
+                        def description(self) -> str:
+                            return self.definition.description
+
+                        def to_dict(self):
+                            return {
+                                "name": self.definition.name,
+                                "description": self.definition.description,
+                                "input_schema": self.definition.parameters
+                            }
+
+                        async def execute(self, tool_call_id: str, arguments: dict, on_update=None):
+                            from .tools.builtin.base import ToolResult
+                            try:
+                                result = await self.definition.execute(arguments, ctx)
+                                return ToolResult(content=str(result), is_error=False)
+                            except Exception as e:
+                                return ToolResult(content=f"Error: {str(e)}", is_error=True)
+
+                    ext_tool = ExtensionTool(tool_def)
+                    agent.tools.append(ext_tool)
+                    agent.tool_map[ext_tool.name] = ext_tool
+
+                # Emit SESSION_START
+                from .extensions.types import SessionStartEvent
+                await runner.emit(SessionStartEvent())
+
+                # Run interactive CLI
+                await cli.run_interactive_async(
+                    agent,
+                    tools=agent.tools,
+                    model=settings.model,
+                    skills=skills,
+                    show_welcome=False
+                )
+
+            except KeyboardInterrupt:
+                print("\nShutting down...")
+            finally:
+                # Emit SESSION_END
+                from .extensions.types import SessionEndEvent
+                await runner.emit(SessionEndEvent())
+
+                # Cleanup agent
+                await agent.cleanup()
+
+        asyncio.run(run_async())
     else:
         # Non-interactive mode
         message = " ".join(args.message)

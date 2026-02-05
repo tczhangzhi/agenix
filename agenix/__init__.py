@@ -9,6 +9,9 @@ from .core import (
     LiteLLMProvider,
     get_provider,
     SessionManager,
+    Settings,
+    get_default_model,
+    ensure_config_dir,
     # Messages
     Message,
     UserMessage,
@@ -22,12 +25,6 @@ from .core import (
     Event,
 )
 
-from .extensions import (
-    # Tool Registry
-    ToolRegistry,
-    ToolConfig,
-)
-
 from .tools import (
     Tool,
     ToolResult,
@@ -37,8 +34,34 @@ from .tools import (
     BashTool,
     GrepTool,
     GlobTool,
-    SkillTool,
-    TaskTool,
+)
+
+# Services
+from .extensions.builtin.memory.service import MemoryStore
+from .extensions.builtin.heartbeat.service import HeartbeatService, DEFAULT_HEARTBEAT_INTERVAL_S, HEARTBEAT_PROMPT
+from .extensions.builtin.cron.service import CronService
+from .extensions.builtin.cron.types import CronJob, CronSchedule, CronPayload, CronJobState, CronStore
+from .bus import (
+    MessageBus,
+    Event as BusEvent,
+    AgentMessageEvent,
+    AgentResponseEvent,
+    CronJobEvent,
+    HeartbeatEvent,
+    MemoryUpdateEvent,
+    SystemEvent,
+)
+
+# Channels
+from .channel import (
+    BaseChannel,
+    ChannelManager,
+    TelegramChannel,
+    TelegramConfig,
+    WhatsAppChannel,
+    WhatsAppConfig,
+    CLI,
+    CLIRenderer,
 )
 
 __all__ = [
@@ -49,6 +72,9 @@ __all__ = [
     "LiteLLMProvider",
     "get_provider",
     "SessionManager",
+    "Settings",
+    "get_default_model",
+    "ensure_config_dir",
     # Messages
     "Message",
     "UserMessage",
@@ -59,9 +85,6 @@ __all__ = [
     "ToolCall",
     "Usage",
     "Event",
-    # Extensions - Registry
-    "ToolRegistry",
-    "ToolConfig",
     # Tools
     "Tool",
     "ToolResult",
@@ -71,6 +94,34 @@ __all__ = [
     "BashTool",
     "GrepTool",
     "GlobTool",
-    "SkillTool",
-    "TaskTool",
+    # Services
+    "MemoryStore",
+    "HeartbeatService",
+    "DEFAULT_HEARTBEAT_INTERVAL_S",
+    "HEARTBEAT_PROMPT",
+    "CronService",
+    "CronJob",
+    "CronSchedule",
+    "CronPayload",
+    "CronJobState",
+    "CronStore",
+    # Bus
+    "MessageBus",
+    "BusEvent",
+    "AgentMessageEvent",
+    "AgentResponseEvent",
+    "CronJobEvent",
+    "HeartbeatEvent",
+    "MemoryUpdateEvent",
+    "SystemEvent",
+    # Channels
+    "BaseChannel",
+    "ChannelManager",
+    "TelegramChannel",
+    "TelegramConfig",
+    "WhatsAppChannel",
+    "WhatsAppConfig",
+    "CLI",
+    "CLIRenderer",
 ]
+

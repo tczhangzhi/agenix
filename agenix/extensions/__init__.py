@@ -1,11 +1,13 @@
 """Extensions package - Tool registry and event types."""
 
-from .tool_registry import ToolRegistry, ToolConfig
 from .types import (
     EventType,
     Event,
+    CancellableEvent,
     SessionStartEvent,
     SessionEndEvent,
+    SessionShutdownEvent,
+    BeforeAgentStartEvent,
     AgentStartEvent,
     AgentEndEvent,
     TurnStartEvent,
@@ -13,6 +15,9 @@ from .types import (
     ToolCallEvent,
     ToolResultEvent,
     UserInputEvent,
+    ContextEvent,
+    BeforeCompactEvent,
+    CompactEvent,
     ExtensionContext,
     ToolDefinition,
     CommandDefinition,
@@ -30,14 +35,14 @@ from .loader import (
 from .runner import ExtensionRunner
 
 __all__ = [
-    # Tool Registry
-    "ToolRegistry",
-    "ToolConfig",
     # Types
     "EventType",
     "Event",
+    "CancellableEvent",
     "SessionStartEvent",
     "SessionEndEvent",
+    "SessionShutdownEvent",
+    "BeforeAgentStartEvent",
     "AgentStartEvent",
     "AgentEndEvent",
     "TurnStartEvent",
@@ -45,6 +50,9 @@ __all__ = [
     "ToolCallEvent",
     "ToolResultEvent",
     "UserInputEvent",
+    "ContextEvent",
+    "BeforeCompactEvent",
+    "CompactEvent",
     "ExtensionContext",
     "ToolDefinition",
     "CommandDefinition",
@@ -60,3 +68,4 @@ __all__ = [
     # Runner
     "ExtensionRunner",
 ]
+
